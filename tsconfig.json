@@ -10,5 +10,6 @@
     "outDir": "./lib",
     "forceConsistentCasingInFileNames": true,
     "strict": true
-  }
+  },
+  "exclude": ["lib", "node_modules", "./test/**/*.ts"]
 }

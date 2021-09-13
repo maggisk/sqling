@@ -47,7 +47,8 @@ export class Query<Params, Result> {
         const results = await read(chunkSize);
         if (results.length > 0) {
           yield results;
-        } else {
+        }
+        if (results.length < chunkSize) {
           break;
         }
       }

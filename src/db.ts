@@ -1,26 +1,12 @@
 import { Client, ClientConfig, Connection } from "pg";
 import * as types from "./types";
-import { sleep } from './utils'
+import Mutex from "./mutex";
 
 export const connect = async (
   config?: ClientConfig
-): Promise<types.Generator> => {
+): Promise<types.Connection> => {
   const client = new Client(config);
   await client.connect();
-
-  const { rows } = await client.query("SELECT * FROM pg_type");
-
-  const idToRow: Record<string, any> = {};
-  for (const row of rows) {
-    idToRow[row.oid] = row;
-  }
-
-  const typeMap: types.TypeMap = {};
-  for (const { oid, typelem, typcategory } of rows) {
-    const isArray = typcategory === "A";
-    const name = idToRow[isArray ? typelem : oid].typname;
-    typeMap[oid] = { isArray, name };
-  }
 
   // client.connection isn't exposed via typescript types
   const conn: Connection = (client as any).connection;
@@ -38,46 +24,70 @@ export const connect = async (
 
   // (conn as any)._emitMessage = true;
   // conn.on("message", console.log);
-  conn.on("errorMessage", console.error);
-  return { conn, typeMap };
+  return { conn, mutex: new Mutex() };
 };
 
-const locked = new Set();
+export const getPgTypes = async (
+  config?: ClientConfig
+): Promise<types.TypeMap> => {
+  const client = new Client(config);
+  await client.connect();
 
-export const describeQuery = async (
-  conn: Connection,
-  query: string
-): Promise<types.QueryDescription> => {
-  // TODO proper fix
-  while (locked.has(conn)) {
-    await sleep(10)
+  const { rows } = await client.query("SELECT * FROM pg_type");
+
+  const idToRow: Record<string, any> = {};
+  for (const row of rows) {
+    idToRow[row.oid] = row;
   }
 
-  locked.add(conn);
-  conn.sync()
+  const typeMap: types.TypeMap = {};
+  for (const { oid, typelem, typcategory } of rows) {
+    const isArray = typcategory === "A";
+    const name = idToRow[isArray ? typelem : oid].typname;
+    typeMap[oid] = { isArray, name };
+  }
 
-  try {
-    const promise = new Promise<types.QueryDescription>((resolve, reject) => {
-      conn.on("errorMessage", err => {
-        if (err.position) {
-          // we need to subtract the length of the PREPARE sqling AS prefix
-          err.position = parseInt(err.position, 10) - 18
-        }
-        reject(err);
-      });
-      conn.once("parameterDescription", ({ dataTypeIDs }) => {
-        conn.once("rowDescription", ({ fields }) => {
-          resolve({ input: dataTypeIDs, output: fields });
-        });
+  await client.end();
+  return typeMap;
+};
+
+const PREPARE_STATEMENT = "PREPARE sqling AS ";
+
+const listenToResponseToDescribe = async (
+  conn: Connection
+): Promise<types.QueryDescription> => {
+  return new Promise<types.QueryDescription>((resolve, reject) => {
+    conn.once("errorMessage", err => {
+      if (err.position) {
+        // we need to subtract the length of the "PREPARE AS" to get correct
+        // query error position
+        err.position = parseInt(err.position, 10) - PREPARE_STATEMENT.length;
+      }
+      reject(err);
+    });
+    conn.once("parameterDescription", ({ dataTypeIDs }) => {
+      conn.once("rowDescription", ({ fields }) => {
+        resolve({ input: dataTypeIDs, output: fields });
       });
     });
+  });
+};
+
+export const describeQuery = async (
+  { conn, mutex }: types.Connection,
+  query: string
+): Promise<types.QueryDescription> => {
+  return mutex.synchronize(async () => {
+    conn.removeAllListeners();
+    conn.sync();
+
+    const response = listenToResponseToDescribe(conn);
+
     conn.query("DEALLOCATE ALL");
-    conn.query(`PREPARE sqling AS ${query}`);
+    conn.query(`${PREPARE_STATEMENT}${query}`);
     conn.describe({ type: "S", name: "sqling" }, false);
     conn.flush();
-    return await promise;
-  } finally {
-    locked.delete(conn);
-    conn.removeAllListeners();
-  }
+
+    return await response;
+  });
 };

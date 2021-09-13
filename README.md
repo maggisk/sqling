@@ -1,12 +1,12 @@
 # SqLing
 
-## Validate your postgres queries at compile time and generate typescript types for parameters and return values
+Validate your postgres queries at compile time and generate typescript types for parameters and return values
 
 ### Why?
 
 Postgres is nice. Types are nice. Sql isn't so bad either
 
-It improves you confidence in your code alot to validate all your queries at compile time and have types for everything interacting with the database to avoid mistakes.
+It improves your confidence in your code alot to validate all your queries at compile time and have types for everything interacting with the database to avoid mistakes.
 
 ### How?
 

@@ -3,9 +3,14 @@ import fs from "fs";
 import { join } from "path";
 import chokidar from "chokidar";
 import { ClientConfig } from "pg";
-import { connect, describeQuery } from "./db";
-import { QueryDescription, Generator, TypeMap } from "./types";
-import { QueryDef } from "./queries";
+import { connect, describeQuery, getPgTypes } from "./db";
+import { QueryDef } from "./builder";
+import * as types from "./types";
+
+interface Context {
+  conn: types.Connection;
+  types: types.TypeMap;
+}
 
 const typemap: Record<string, string> = {
   int8: "string", // node-postgres also returns 64 bit ints as strings
@@ -32,65 +37,63 @@ const collectQueries = (filePath: string): Array<[string, QueryDef]> => {
   });
 };
 
-const pgTypeIdToTsType = (typeMap: TypeMap, typeId: number): string => {
+const pgTypeIdToTsType = (typeMap: types.TypeMap, typeId: number): string => {
   const type = typeMap[typeId];
   const tsTypeName =
     typemap[type.name] ?? typemap[type.name.replace(/\d/g, "")] ?? "unknown";
 
-  if (tsTypeName === 'unknown') console.log(type)
+  if (tsTypeName === "unknown") console.log(type);
   return tsTypeName + (type.isArray ? "[]" : "");
 };
 
 const generateInputType = (
-  typeMap: TypeMap,
-  desc: QueryDescription,
+  types: types.TypeMap,
+  desc: types.QueryDescription,
   query: QueryDef
 ): string[] => {
   return Array.from(new Set(query.keys)).map((k, i) => {
-    return `${k}: ${pgTypeIdToTsType(typeMap, desc.input[i])}`;
+    return `${k}: ${pgTypeIdToTsType(types, desc.input[i])}`;
   });
 };
 
 const generateReturnType = (
-  typeMap: TypeMap,
-  desc: QueryDescription
+  types: types.TypeMap,
+  desc: types.QueryDescription
 ): string[] => {
   return desc.output.map(field => {
-    return `${field.name}: ${pgTypeIdToTsType(typeMap, field.dataTypeID)}`;
+    return `${field.name}: ${pgTypeIdToTsType(types, field.dataTypeID)}`;
   });
 };
 
 const generateQuery = async (
+  { conn, types }: Context,
   name: string,
-  query: QueryDef,
-  { typeMap, conn }: Generator
+  query: QueryDef
 ) => {
   const id = name.charAt(0).toUpperCase() + name.substring(1);
   const description = await describeQuery(conn, query.sql);
 
   return `
 export interface ${id}Input {
-  ${generateInputType(typeMap, description, query).join("\n  ")}
+  ${generateInputType(types, description, query).join("\n  ")}
 }
 
 export interface ${id}Output {
-  ${generateReturnType(typeMap, description).join("\n  ")}
+  ${generateReturnType(types, description).join("\n  ")}
 }
 
 export const ${name} = new runtime.Query<${id}Input, ${id}Output>(
   ${JSON.stringify(query.sql)},
-  ${query.keys.length ? JSON.stringify(query.keys) : 'undefined'}
+  ${query.keys.length ? JSON.stringify(query.keys) : "undefined"}
 )`;
 };
 
-const writeFile = async (
-  session: Generator,
-  sourceFile: string
-): Promise<void> => {
+const writeFile = async (ctx: Context, sourceFile: string): Promise<void> => {
   const queries = collectQueries(sourceFile);
+
   const queryCode = [];
   for (const [name, query] of queries) {
-    queryCode.push(await generateQuery(name, query, session));
+    queryCode.push(await generateQuery(ctx, name, query));
   }
 
   const code = [
@@ -114,7 +117,10 @@ export const generate = async ({
   pgConfig: ClientConfig;
   afterWrite?: (path: string) => void | Promise<void>;
 }): Promise<void> => {
-  const conn = await connect(pgConfig);
+  const context = {
+    conn: await connect(pgConfig),
+    types: await getPgTypes(pgConfig)
+  };
 
   chokidar.watch(glob).on("all", (_event, path, _stats) => {
     if (!path.endsWith(".sql.ts")) {
@@ -124,10 +130,10 @@ export const generate = async ({
       return;
     }
 
-    writeFile(conn, path).catch(console.error);
+    writeFile(context, path).catch(console.error);
     const after = afterWrite(path);
-    if (after && 'catch' in after) {
-      after.catch(console.error)
+    if (after && "catch" in after) {
+      after.catch(console.error);
     }
   });
 };

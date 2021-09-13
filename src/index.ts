@@ -1,2 +1,2 @@
 export { generate } from './generator'
-export { sql, f } from './queries'
+export { sql, f } from './builder'
