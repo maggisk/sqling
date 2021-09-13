@@ -1,18 +1,18 @@
 # SqLing
 
-## Typescript type generator for your postgres sql queries
+## Validate your postgres queries at compile time and generate typescript types for parameters and return values
 
 ### Why?
 
-Sql is nice. Types are nice.
+Postgres is nice. Types are nice. Sql isn't so bad either
 
-It gives you a huge confidence boost to validate all your queries at compile time and have types for everything interacting with the database to avoid mistakes.
+It improves you confidence in your code alot to validate all your queries at compile time and have types for everything interacting with the database to avoid mistakes.
 
 ### How?
 
-`yarn add sqling` or `npm install sqling`
+`yarn add sqling` or `npm install sqling` (TODO: not actually published to npm yet :)
 
-You also need ts-node for development only
+You also need ts-node (for development only)
 
 `yarn add ts-node -D` or `npm install ts-node --save-dev`
 
