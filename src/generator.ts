@@ -1,6 +1,7 @@
 import assert from "assert";
 import fs from "fs";
 import { join } from "path";
+import { DatabaseError } from "pg-protocol";
 import chokidar from "chokidar";
 import { ClientConfig } from "pg";
 import { connect, describeQuery, getPgTypes } from "./db";
@@ -79,9 +80,9 @@ const generateQuery = async (
   const id = name.charAt(0).toUpperCase() + name.substring(1);
   const description = await describeQuery(conn, query.sql);
 
-  if ("error" in description) {
+  if (description instanceof DatabaseError) {
     return {
-      error: explainQueryError(description.query, description.error),
+      error: explainQueryError(query.sql, description),
       code: lines(
         "// Query error",
         `export type ${id}Input = never`,

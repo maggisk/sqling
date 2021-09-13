@@ -60,8 +60,8 @@ const listenToResponseToDescribe = async (
   return new Promise<types.QueryDescription>(resolve => {
     conn.once("errorMessage", error => {
       if (error.position) {
-        // we need to subtract the length of the "PREPARE AS" to get correct
-        // query error position
+        // we need to subtract the length of the "PREPARE AS" statement to get
+        // correct query error position
         error.position = (
           parseInt(error.position, 10) - PREPARE_STATEMENT.length
         ).toString();
@@ -80,7 +80,7 @@ export const describeQuery = async (
   { conn, mutex }: types.Connection,
   query: string
 ): Promise<
-  types.QueryDescription | { error: DatabaseError; query: string }
+  types.QueryDescription | DatabaseError
 > => {
   return mutex.synchronize(async () => {
     conn.removeAllListeners();
@@ -91,7 +91,6 @@ export const describeQuery = async (
     conn.describe({ type: "S", name: "sqling" }, false);
     conn.flush();
 
-    const r = await listenToResponseToDescribe(conn);
-    return r instanceof DatabaseError ? { error: r, query } : r;
+    return await listenToResponseToDescribe(conn);
   });
 };
