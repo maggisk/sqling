@@ -1,6 +1,7 @@
 import { Client, ClientConfig, Connection } from "pg";
 import * as types from "./types";
 import Mutex from "./mutex";
+import { DatabaseError } from "pg-protocol";
 
 export const connect = async (
   config?: ClientConfig
@@ -55,15 +56,17 @@ const PREPARE_STATEMENT = "PREPARE sqling AS ";
 
 const listenToResponseToDescribe = async (
   conn: Connection
-): Promise<types.QueryDescription> => {
-  return new Promise<types.QueryDescription>((resolve, reject) => {
-    conn.once("errorMessage", err => {
-      if (err.position) {
+): Promise<types.QueryDescription | DatabaseError> => {
+  return new Promise<types.QueryDescription>(resolve => {
+    conn.once("errorMessage", error => {
+      if (error.position) {
         // we need to subtract the length of the "PREPARE AS" to get correct
         // query error position
-        err.position = parseInt(err.position, 10) - PREPARE_STATEMENT.length;
+        error.position = (
+          parseInt(error.position, 10) - PREPARE_STATEMENT.length
+        ).toString();
       }
-      reject(err);
+      resolve(error);
     });
     conn.once("parameterDescription", ({ dataTypeIDs }) => {
       conn.once("rowDescription", ({ fields }) => {
@@ -76,18 +79,19 @@ const listenToResponseToDescribe = async (
 export const describeQuery = async (
   { conn, mutex }: types.Connection,
   query: string
-): Promise<types.QueryDescription> => {
+): Promise<
+  types.QueryDescription | { error: DatabaseError; query: string }
+> => {
   return mutex.synchronize(async () => {
     conn.removeAllListeners();
     conn.sync();
-
-    const response = listenToResponseToDescribe(conn);
 
     conn.query("DEALLOCATE ALL");
     conn.query(`${PREPARE_STATEMENT}${query}`);
     conn.describe({ type: "S", name: "sqling" }, false);
     conn.flush();
 
-    return await response;
+    const r = await listenToResponseToDescribe(conn);
+    return r instanceof DatabaseError ? { error: r, query } : r;
   });
 };

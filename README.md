@@ -66,7 +66,7 @@ Early alpha. Proof of concept and barely usable :)
 
 Roughly in order
 
-- [ ] fix error handling when there is an error in query
+- [x] fix error handling when there is an error in query
 - [ ] fix types to allow null for optional paremeter values and return values
 - [ ] improve tests
 - [ ] publish to npm

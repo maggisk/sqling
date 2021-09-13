@@ -9,7 +9,7 @@ export default class Mutex {
       return await fn();
     } finally {
       this.queue.shift();
-      this.queue[this.queue.length - 1]?.();
+      this.queue[0]?.();
     }
   }
 }
