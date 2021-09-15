@@ -3,7 +3,7 @@ export default class Mutex {
 
   async synchronize<T>(fn: () => Promise<T>): Promise<T> {
     const lock = new Promise(resolve => this.queue.push(resolve));
-    this.queue.length === 1 && this.queue[0]();
+    if (this.queue.length === 1) this.queue[0]();
     await lock;
     try {
       return await fn();

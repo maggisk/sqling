@@ -57,7 +57,7 @@ const PREPARE_STATEMENT = "PREPARE sqling AS ";
 const listenToResponseToDescribe = async (
   conn: Connection
 ): Promise<types.QueryDescription | DatabaseError> => {
-  return new Promise<types.QueryDescription>(resolve => {
+  return new Promise(resolve => {
     conn.once("errorMessage", error => {
       if (error.position) {
         // we need to subtract the length of the "PREPARE AS" statement to get
@@ -79,9 +79,7 @@ const listenToResponseToDescribe = async (
 export const describeQuery = async (
   { conn, mutex }: types.Connection,
   query: string
-): Promise<
-  types.QueryDescription | DatabaseError
-> => {
+): Promise<types.QueryDescription | DatabaseError> => {
   return mutex.synchronize(async () => {
     conn.removeAllListeners();
     conn.sync();

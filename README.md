@@ -12,14 +12,9 @@ It improves your confidence in your code alot to validate all your queries at co
 
 `yarn add sqling` or `npm install sqling` (TODO: not actually published to npm yet :)
 
-You also need ts-node (for development only)
-
-`yarn add ts-node -D` or `npm install ts-node --save-dev`
-
 create a `sqling.js` file in your project containing the following
 
 ```
-require("ts-node").register();
 const sqling = require("sqling");
 
 sqling.generate({

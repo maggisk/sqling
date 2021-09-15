@@ -19,3 +19,8 @@ export interface Connection {
   conn: PgConn;
   mutex: Mutex;
 }
+
+export interface QueryDef {
+  sql: string
+  keys: string[]
+}

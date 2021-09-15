@@ -1,16 +1,16 @@
 import assert from "assert";
 import fs from "fs";
-import { join } from "path";
+import ts from "typescript";
 import { DatabaseError } from "pg-protocol";
 import chokidar from "chokidar";
 import { ClientConfig } from "pg";
 import { connect, describeQuery, getPgTypes } from "./db";
-import { QueryDef } from "./builder";
-import { red, green, yellow, explainQueryError } from "./utils";
+import { red, green, explainQueryError } from "./utils";
 import Mutex from "./mutex";
 import * as types from "./types";
+import * as astUtils from "./astUtils";
 
-interface Context {
+interface Generator {
   conn: types.Connection;
   types: types.TypeMap;
 }
@@ -35,13 +35,13 @@ const lines = (...args: Array<string | string[]>): string => {
   return args.flatMap(x => (Array.isArray(x) ? x : [x])).join("\n");
 };
 
-const collectQueries = (filePath: string): Array<[string, QueryDef]> => {
-  const path = require.resolve(join(process.cwd(), filePath));
-  delete require.cache[path];
-  const mod: Record<string, QueryDef> = require(path);
-  return Object.entries(mod).filter(([, query]) => {
-    return query instanceof QueryDef;
-  });
+const collectQueries = (filePath: string): Array<[string, types.QueryDef]> => {
+  const code = fs.readFileSync(filePath, { encoding: "utf-8" });
+  const ast = ts.createSourceFile(filePath, code, ts.ScriptTarget.Latest);
+
+  return astUtils.extractQueriesFromAst(ast).map(([name, node]) => {
+    return [name, astUtils.extractQueryString(node)]
+  })
 };
 
 const pgTypeIdToTsType = (typeMap: types.TypeMap, typeId: number): string => {
@@ -56,7 +56,7 @@ const pgTypeIdToTsType = (typeMap: types.TypeMap, typeId: number): string => {
 const generateInputType = (
   types: types.TypeMap,
   desc: types.QueryDescription,
-  query: QueryDef
+  query: types.QueryDef
 ): string[] => {
   return Array.from(new Set(query.keys)).map((k, i) => {
     return `${k}: ${pgTypeIdToTsType(types, desc.input[i])}`;
@@ -73,9 +73,9 @@ const generateReturnType = (
 };
 
 const generateQuery = async (
-  { conn, types }: Context,
+  { conn, types }: Generator,
   name: string,
-  query: QueryDef
+  query: types.QueryDef
 ): Promise<{ code: string; error?: string }> => {
   const id = name.charAt(0).toUpperCase() + name.substring(1);
   const description = await describeQuery(conn, query.sql);
@@ -110,13 +110,16 @@ const generateQuery = async (
   };
 };
 
-const writeFile = async (ctx: Context, sourceFile: string): Promise<void> => {
+const writeFile = async (
+  genState: Generator,
+  sourceFile: string
+): Promise<void> => {
   const queryCode = await Promise.all(
     collectQueries(sourceFile).map(async ([name, query]) => {
-      const { code, error } = await generateQuery(ctx, name, query);
+      const { code, error } = await generateQuery(genState, name, query);
       if (error) {
         console.error(`${sourceFile} -> ${name} ${red("error")}`);
-        console.error(yellow(error));
+        console.error(error);
       } else {
         console.log(`${sourceFile} -> ${name} ${green("ok")}`);
       }
@@ -140,14 +143,16 @@ const writeFile = async (ctx: Context, sourceFile: string): Promise<void> => {
 export const generate = async ({
   glob,
   pgConfig,
+  outfile,
   afterWrite = () => {}
 }: {
   glob: string | string[];
   pgConfig: ClientConfig;
+  outfile: string;
   afterWrite?: (path: string) => void | Promise<void>;
 }): Promise<void> => {
   const mutexes: Record<string, Mutex> = {};
-  const context = {
+  const genState = {
     conn: await connect(pgConfig),
     types: await getPgTypes(pgConfig)
   };
@@ -165,7 +170,7 @@ export const generate = async ({
     }
     mutexes[path].synchronize(async () => {
       try {
-        await writeFile(context, path);
+        await writeFile(genState, path);
         await afterWrite(path);
       } catch (e) {
         console.error(e);
