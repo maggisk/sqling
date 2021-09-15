@@ -55,11 +55,12 @@ const pgTypeIdToTsType = (typeMap: types.TypeMap, typeId: number): string => {
 
 const generateInputType = (
   types: types.TypeMap,
-  desc: types.QueryDescription,
-  query: types.QueryDef
+  { input }: types.QueryDescription,
+  { keys }: types.QueryDef
 ): string[] => {
-  return Array.from(new Set(query.keys)).map((k, i) => {
-    return `${k}: ${pgTypeIdToTsType(types, desc.input[i])}`;
+  const uniq = Array.from(new Set(keys)).sort();
+  return uniq.map(k => {
+    return `${k}: ${pgTypeIdToTsType(types, input[keys.indexOf(k)])}`;
   });
 };
 
@@ -67,9 +68,9 @@ const generateReturnType = (
   types: types.TypeMap,
   desc: types.QueryDescription
 ): string[] => {
-  return desc.output.map(field => {
-    return `${field.name}: ${pgTypeIdToTsType(types, field.dataTypeID)}`;
-  });
+  return Array.from(desc.output)
+    .sort((a, b) => (a.name < b.name ? -1 : 1))
+    .map(x => `${x.name}: ${pgTypeIdToTsType(types, x.dataTypeID)}`);
 };
 
 const generateQuery = async (
