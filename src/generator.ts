@@ -40,8 +40,8 @@ const collectQueries = (filePath: string): Array<[string, types.QueryDef]> => {
   const ast = ts.createSourceFile(filePath, code, ts.ScriptTarget.Latest);
 
   return astUtils.extractQueriesFromAst(ast).map(([name, node]) => {
-    return [name, astUtils.extractQueryString(node)]
-  })
+    return [name, astUtils.extractQueryString(node)];
+  });
 };
 
 const pgTypeIdToTsType = (typeMap: types.TypeMap, typeId: number): string => {
@@ -135,7 +135,7 @@ const writeFile = async (
     ...queryCode
   );
 
-  const destFile = sourceFile.replace(".sql.ts", ".ts");
+  const destFile = sourceFile.replace(/\.(.*?)$/, ".sql.$1");
   assert(destFile !== sourceFile, "attempted to overwrite input file");
   fs.writeFileSync(destFile, code, { encoding: "utf8" });
 };
@@ -158,12 +158,7 @@ export const generate = async ({
   };
 
   chokidar.watch(glob).on("all", (_event, path, _stats) => {
-    if (!path.endsWith(".sql.ts")) {
-      console.warn("unexpected input file: " + path);
-      console.warn("sqling will only process files ending in .sql.ts");
-      console.warn("change your glob pattern to only match those files");
-      return;
-    }
+    if (path.endsWith(".sql.ts")) return;
 
     if (!mutexes[path]) {
       mutexes[path] = new Mutex();

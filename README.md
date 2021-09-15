@@ -18,7 +18,7 @@ create a `sqling.js` file in your project containing the following
 const sqling = require("sqling");
 
 sqling.generate({
-  glob: "src/**/*.sql.ts",
+  glob: "src/**/*.ts",
   pgConfig: {
     host: "localhost",
     password: "postgres",
@@ -31,7 +31,7 @@ sqling.generate({
 and run it with `node sqling.js`. This will create a watcher that creates a
 corresponding `.ts` file every time your `.sql.ts` changes
 
-now write your queries in the `src` directory e.g. `users.sql.ts`
+now write your queries in the `src` directory e.g. `users.ts`
 
 ```
 import { sql, f } from 'sqling'
@@ -43,11 +43,11 @@ OFFSET ${f.offset}
 `
 ```
 
-now you can import `src/users` and run the query with something like
+now you can import `src/users.sql` and run the query with something like
 
 ```
 import { Pool } from 'pg'
-import { paginateUsers } from './users'
+import { paginateUsers } from './users.sql'
 // ...
 const db = new Pool()
 const users = await paginateUsers.all(db, { offset: 0, limit: 10 })
