@@ -21,7 +21,7 @@ export const explainQueryError = (
   const pos = parseInt(error.position || "-1", 10);
   let chars = 0;
 
-  const r = [];
+  const r = []
   for (const line of query.split("\n")) {
     r.push(yellow(line));
     if (chars <= pos && pos <= chars + line.length) {
