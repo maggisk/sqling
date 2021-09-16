@@ -3,11 +3,14 @@ import * as types from "./types";
 import Mutex from "./mutex";
 import { DatabaseError } from "pg-protocol";
 
-export const connect = async (
-  config?: ClientConfig
-): Promise<types.Connection> => {
+const newClient = async (config?: ClientConfig): Promise<Client> => {
   const client = new Client(config);
   await client.connect();
+  return client;
+};
+
+const newConnection = async (config?: ClientConfig): Promise<Connection> => {
+  const client = await newClient(config);
 
   // client.connection isn't exposed via typescript types
   const conn: Connection = (client as any).connection;
@@ -22,18 +25,18 @@ export const connect = async (
   // without event liseteners in the Client causing issues when we do something
   // the Client doesn't expect
   conn.removeAllListeners();
-
-  // (conn as any)._emitMessage = true;
-  // conn.on("message", console.log);
-  return { conn, mutex: new Mutex() };
+  return conn;
 };
 
-export const getPgTypes = async (
+export const connect = async (
   config?: ClientConfig
-): Promise<types.TypeMap> => {
-  const client = new Client(config);
-  await client.connect();
+): Promise<types.Database> => ({
+  conn: await newConnection(config),
+  client: await newClient(config),
+  mutex: new Mutex()
+});
 
+export const getPgTypes = async (client: Client): Promise<types.TypeMap> => {
   const { rows } = await client.query("SELECT * FROM pg_type");
 
   const idToRow: Record<string, any> = {};
@@ -48,8 +51,33 @@ export const getPgTypes = async (
     typeMap[oid] = { isArray, name };
   }
 
-  await client.end();
   return typeMap;
+};
+
+export const listTablesAndColumns = async (
+  db: Client
+): Promise<types.Catalog> => {
+  const { rows } = await db.query(`
+    SELECT *, table_name::regclass::oid as table_id
+    FROM information_schema.columns
+    WHERE table_schema NOT IN ('information_schema', 'pg_catalog')`);
+
+  const tables: types.Catalog["tables"] = new Map();
+  for (const row of rows) {
+    if (!tables.has(row.table_id)) {
+      tables.set(row.table_id, {
+        schema: row.table_schema,
+        name: row.table_name,
+        columns: new Map()
+      });
+    }
+    tables.get(row.table_id)!.columns.set(row.ordinal_position, {
+      name: row.column_name,
+      nullable: row.is_nullable === "YES"
+    });
+  }
+
+  return { tables };
 };
 
 const PREPARE_STATEMENT = "PREPARE sqling AS ";
@@ -77,7 +105,7 @@ const listenToResponseToDescribe = async (
 };
 
 export const describeQuery = async (
-  { conn, mutex }: types.Connection,
+  { conn, mutex }: types.Database,
   query: string
 ): Promise<types.QueryDescription | DatabaseError> => {
   return mutex.synchronize(async () => {

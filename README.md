@@ -62,7 +62,7 @@ Early alpha. Proof of concept and barely usable :)
 Roughly in order
 
 - [x] fix error handling when there is an error in query
-- [ ] fix types to allow null for optional paremeter values and return values
+- [x] fix types to set result attributes to " | null" if database column allows nulls
 - [ ] improve tests
 - [ ] publish to npm
 - [ ] decide how to deal with 64 bit integers sent to/from postgres (strings at the moment which is annoying)

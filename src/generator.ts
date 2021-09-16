@@ -4,15 +4,16 @@ import ts from "typescript";
 import { DatabaseError } from "pg-protocol";
 import chokidar from "chokidar";
 import { ClientConfig } from "pg";
-import { connect, describeQuery, getPgTypes } from "./db";
+import { connect, describeQuery, getPgTypes, listTablesAndColumns } from "./db";
 import { red, green, explainQueryError } from "./utils";
 import Mutex from "./mutex";
 import * as types from "./types";
 import * as astUtils from "./astUtils";
 
 interface Generator {
-  conn: types.Connection;
+  db: types.Database;
   types: types.TypeMap;
+  catalog: types.Catalog;
 }
 
 const typemap: Record<string, string> = {
@@ -60,27 +61,32 @@ const generateInputType = (
 ): string[] => {
   const uniq = Array.from(new Set(keys)).sort();
   return uniq.map(k => {
-    return `${k}: ${pgTypeIdToTsType(types, input[keys.indexOf(k)])}`;
+    return `${k}: ${pgTypeIdToTsType(types, input[keys.indexOf(k)])} | null`;
   });
 };
 
 const generateReturnType = (
   types: types.TypeMap,
+  catalog: types.Catalog,
   desc: types.QueryDescription
 ): string[] => {
   return Array.from(desc.output)
     .sort((a, b) => (a.name < b.name ? -1 : 1))
-    .map(x => `${x.name}: ${pgTypeIdToTsType(types, x.dataTypeID)}`);
+    .map(x => {
+      let type = pgTypeIdToTsType(types, x.dataTypeID);
+      const col = catalog.tables.get(x.tableID)?.columns.get(x.columnID);
+      return `${x.name}: ${type} ${col?.nullable ? " | null" : ""}`.trim();
+    });
 };
 
 const generateQuery = async (
-  { conn, types }: Generator,
+  { db, types, catalog }: Generator,
   sourceFile: string,
   name: string,
   query: types.QueryDef
 ): Promise<string> => {
   const id = name.charAt(0).toUpperCase() + name.substring(1);
-  const description = await describeQuery(conn, query.sql);
+  const description = await describeQuery(db, query.sql);
   const identifier = `${sourceFile}: ${name}`;
 
   if (description instanceof DatabaseError) {
@@ -102,7 +108,7 @@ const generateQuery = async (
     `}`,
     "",
     `export interface ${id}Output {`,
-    generateReturnType(types, description).map(s => "  " + s),
+    generateReturnType(types, catalog, description).map(s => "  " + s),
     `}`,
     "",
     `export const ${name} = new runtime.Query<${id}Input, ${id}Output>(`,
@@ -147,24 +153,33 @@ export const generate = async ({
   afterWrite?: (path: string) => void | Promise<void>;
 }): Promise<void> => {
   const mutexes: Record<string, Mutex> = {};
-  const genState = {
-    conn: await connect(pgConfig),
-    types: await getPgTypes(pgConfig)
+  const db = await connect(pgConfig);
+  const generator = {
+    db,
+    types: await getPgTypes(db.client),
+    catalog: await listTablesAndColumns(db.client)
   };
 
-  chokidar.watch(glob).on("all", (_event, path, _stats) => {
-    if (path.endsWith(".sql.ts")) return;
+  let ready = false;
+  chokidar
+    .watch(glob)
+    .on("ready", () => {
+      ready = true;
+    })
+    .on("all", (_event, path, _stats) => {
+      if (path.endsWith(".sql.ts")) return;
 
-    if (!mutexes[path]) {
-      mutexes[path] = new Mutex();
-    }
-    mutexes[path].synchronize(async () => {
-      try {
-        await writeFile(genState, path);
-        await afterWrite(path);
-      } catch (e) {
-        console.error(e);
+      if (!mutexes[path]) {
+        mutexes[path] = new Mutex();
       }
+      mutexes[path].synchronize(async () => {
+        try {
+          if (ready) generator.catalog = await listTablesAndColumns(db.client);
+          await writeFile(generator, path);
+          await afterWrite(path);
+        } catch (e) {
+          console.error(e);
+        }
+      });
     });
-  });
 };

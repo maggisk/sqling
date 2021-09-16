@@ -1,5 +1,5 @@
-import { Connection as PgConn, FieldDef } from "pg";
-import type Mutex from './mutex'
+import { Client, Connection, FieldDef } from "pg";
+import type Mutex from "./mutex";
 
 export interface QueryDescription {
   input: number[];
@@ -15,12 +15,28 @@ export interface TypeMap {
   [k: string]: PgType;
 }
 
-export interface Connection {
-  conn: PgConn;
+export interface Column {
+  name: string
+  nullable: boolean
+}
+
+export interface Table {
+  schema: string
+  name: string
+  columns: Map<number, Column>
+}
+
+export interface Catalog {
+  tables: Map<number, Table>
+}
+
+export interface Database {
+  client: Client;
+  conn: Connection;
   mutex: Mutex;
 }
 
 export interface QueryDef {
-  sql: string
-  keys: string[]
+  sql: string;
+  keys: string[];
 }
