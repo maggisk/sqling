@@ -80,22 +80,12 @@ export const listTablesAndColumns = async (
   return { tables };
 };
 
-const PREPARE_STATEMENT = "PREPARE sqling AS ";
-
 const listenToResponseToDescribe = async (
   conn: Connection
 ): Promise<types.QueryDescription | DatabaseError> => {
   return new Promise(resolve => {
-    conn.once("errorMessage", error => {
-      if (error.position) {
-        // we need to subtract the length of the "PREPARE AS" statement to get
-        // correct query error position
-        error.position = (
-          parseInt(error.position, 10) - PREPARE_STATEMENT.length
-        ).toString();
-      }
-      resolve(error);
-    });
+    conn.once("errorMessage", resolve);
+
     conn.once("parameterDescription", ({ dataTypeIDs }) => {
       conn.once("rowDescription", ({ fields }) => {
         resolve({ input: dataTypeIDs, output: fields });
@@ -112,9 +102,9 @@ export const describeQuery = async (
     conn.removeAllListeners();
     conn.sync();
 
-    conn.query("DEALLOCATE ALL");
-    conn.query(`${PREPARE_STATEMENT}${query}`);
+    conn.parse({ text: query, name: "sqling", types: [] }, false);
     conn.describe({ type: "S", name: "sqling" }, false);
+    conn.query("deallocate sqling");
     conn.flush();
 
     return await listenToResponseToDescribe(conn);

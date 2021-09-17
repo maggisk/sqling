@@ -48,7 +48,7 @@ const collectQueries = (filePath: string): Array<[string, types.QueryDef]> => {
 const pgTypeIdToTsType = (typeMap: types.TypeMap, typeId: number): string => {
   const type = typeMap[typeId];
   const tsTypeName =
-    typemap[type.name] ?? typemap[type.name.replace(/\d/g, "")] ?? "unknown";
+    typemap[type?.name] ?? typemap[type?.name.replace(/\d/g, "")] ?? "unknown";
 
   if (tsTypeName === "unknown") console.log(type);
   return tsTypeName + (type.isArray ? "[]" : "");
@@ -75,7 +75,7 @@ const generateReturnType = (
     .map(x => {
       let type = pgTypeIdToTsType(types, x.dataTypeID);
       const col = catalog.tables.get(x.tableID)?.columns.get(x.columnID);
-      return `${x.name}: ${type} ${col?.nullable ? " | null" : ""}`.trim();
+      return `${x.name}: ${type} ${col?.nullable ? "| null" : ""}`.trim();
     });
 };
 
@@ -174,7 +174,9 @@ export const generate = async ({
       }
       mutexes[path].synchronize(async () => {
         try {
-          if (ready) generator.catalog = await listTablesAndColumns(db.client);
+          if (ready) {
+            generator.catalog = await listTablesAndColumns(db.client);
+          }
           await writeFile(generator, path);
           await afterWrite(path);
         } catch (e) {
