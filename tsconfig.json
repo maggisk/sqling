@@ -2,14 +2,18 @@
   "compilerOptions": {
     "target": "es6",
     "module": "commonjs",
-    "rootDir": "./src",
+    "rootDir": ".",
     "types": ["node"],
     "moduleResolution": "node",
     "esModuleInterop": true,
     "declaration": true,
     "outDir": "./lib",
     "forceConsistentCasingInFileNames": true,
-    "strict": true
+    "baseUrl": "./src",
+    "strict": true,
+    "paths": {
+      "sqling/lib/*": ["./*"]
+    }
   },
-  "exclude": ["lib", "node_modules", "./test/**/*.ts"]
+  "exclude": ["lib", "node_modules"]
 }

@@ -6,7 +6,7 @@
   "scripts": {
     "build": "tsc",
     "watch": "tsc -w",
-    "test": "node japa.js"
+    "test": "ts-node -r dotenv/config -r tsconfig-paths/register japa.ts"
   },
   "dependencies": {
     "pg": "^8.7.1",
@@ -15,7 +15,10 @@
   "devDependencies": {
     "@types/pg": "^8.6.1",
     "chokidar": "^3.5.2",
+    "dotenv": "^10.0.0",
     "japa": "^3.1.1",
+    "ts-node": "^10.2.1",
+    "tsconfig-paths": "^3.11.0",
     "typescript": "^4.4.3"
   }
 }

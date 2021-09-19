@@ -113,7 +113,7 @@ const generateQuery = async (
     "",
     `export const ${name} = new runtime.Query<${id}Input, ${id}Output>(`,
     `  ${JSON.stringify(query.sql)},`,
-    `  ${query.keys.length ? JSON.stringify(query.keys) : "undefined"}`,
+    `  ${query.keys.length ? JSON.stringify(query.keys) : "[]"}`,
     `)`
   );
 };
@@ -136,7 +136,7 @@ const writeFile = async (
     queryCode
   );
 
-  const destFile = sourceFile.replace(/\.(.*?)$/, ".sql.$1");
+  const destFile = sourceFile.replace(/\.([^.]*?)$/, ".sql.$1");
   assert(destFile !== sourceFile, "attempted to overwrite input file");
   fs.writeFileSync(destFile, code, { encoding: "utf8" });
 };
@@ -144,12 +144,12 @@ const writeFile = async (
 export const generate = async ({
   glob,
   pgConfig,
-  outfile,
+  watch = true,
   afterWrite = () => {}
 }: {
   glob: string | string[];
   pgConfig: ClientConfig;
-  outfile: string;
+  watch: boolean;
   afterWrite?: (path: string) => void | Promise<void>;
 }): Promise<void> => {
   const mutexes: Record<string, Mutex> = {};
@@ -161,10 +161,13 @@ export const generate = async ({
   };
 
   let ready = false;
-  chokidar
+  const watcher = chokidar
     .watch(glob)
     .on("ready", () => {
       ready = true;
+      if (!watch) {
+        watcher.close()
+      }
     })
     .on("all", (_event, path, _stats) => {
       if (path.endsWith(".sql.ts")) return;
