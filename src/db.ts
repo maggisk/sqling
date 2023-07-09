@@ -3,12 +3,15 @@ import * as types from "./types";
 import Mutex from "./mutex";
 import { DatabaseError } from "pg-protocol";
 
+// creates a single postgres client for making queries
 const newClient = async (config?: ClientConfig): Promise<Client> => {
   const client = new Client(config);
   await client.connect();
   return client;
 };
 
+// creates a postgres `connection` that we can use to communicate with postgres
+// through it's binary protocl
 const newConnection = async (config?: ClientConfig): Promise<Connection> => {
   const client = await newClient(config);
 
@@ -28,32 +31,31 @@ const newConnection = async (config?: ClientConfig): Promise<Connection> => {
   return conn;
 };
 
+// all the things we need to communicate with postgres
 export const connect = async (
   config?: ClientConfig
 ): Promise<types.Database> => ({
-  conn: await newConnection(config),
   client: await newClient(config),
-  mutex: new Mutex()
+  conn: await newConnection(config),
+  // Connection is stateful, so we need a mutex when using it
+  mutex: new Mutex(),
 });
 
 export const getPgTypes = async (client: Client): Promise<types.TypeMap> => {
   const { rows } = await client.query("SELECT * FROM pg_type");
 
-  const idToRow: Record<string, any> = {};
-  for (const row of rows) {
-    idToRow[row.oid] = row;
-  }
+  const idToRow = Object.fromEntries(rows.map((row) => [row.oid, row]));
 
-  const typeMap: types.TypeMap = {};
-  for (const { oid, typelem, typcategory } of rows) {
-    const isArray = typcategory === "A";
-    const name = idToRow[isArray ? typelem : oid].typname;
-    typeMap[oid] = { isArray, name };
-  }
-
-  return typeMap;
+  return Object.fromEntries(
+    rows.map(({ oid, typelem, typcategory }) => {
+      const isArray = typcategory === "A";
+      const name = idToRow[isArray ? typelem : oid].typname;
+      return [oid, { isArray, name }];
+    })
+  );
 };
 
+// queries postgres for known types and makes a `Catalog` lookup table
 export const listTablesAndColumns = async (
   db: Client
 ): Promise<types.Catalog> => {
@@ -68,30 +70,16 @@ export const listTablesAndColumns = async (
       tables.set(row.table_id, {
         schema: row.table_schema,
         name: row.table_name,
-        columns: new Map()
+        columns: new Map(),
       });
     }
     tables.get(row.table_id)!.columns.set(row.ordinal_position, {
       name: row.column_name,
-      nullable: row.is_nullable === "YES"
+      nullable: row.is_nullable === "YES",
     });
   }
 
   return { tables };
-};
-
-const listenToResponseToDescribe = async (
-  conn: Connection
-): Promise<types.QueryDescription | DatabaseError> => {
-  return new Promise(resolve => {
-    conn.once("errorMessage", resolve);
-
-    conn.once("parameterDescription", ({ dataTypeIDs }) => {
-      conn.once("rowDescription", ({ fields }) => {
-        resolve({ input: dataTypeIDs, output: fields });
-      });
-    });
-  });
 };
 
 export const describeQuery = async (
@@ -99,14 +87,39 @@ export const describeQuery = async (
   query: string
 ): Promise<types.QueryDescription | DatabaseError> => {
   return mutex.synchronize(async () => {
+    // start by resetting the connection
     conn.removeAllListeners();
     conn.sync();
 
+    /* enables logging of postgres response */
+    // (conn as any)._emitMessage = true;
+    // conn.on("message", (...args) => {
+    //   console.log("postgres message", args);
+    // });
+
+    // ask postgres to describe the query
     conn.parse({ text: query, name: "sqling", types: [] }, false);
     conn.describe({ type: "S", name: "sqling" }, false);
     conn.query("deallocate sqling");
     conn.flush();
 
-    return await listenToResponseToDescribe(conn);
+    const r = await new Promise<types.DescriptionResult>((resolve) => {
+      // we'll first either get an errorMessage or parameterDescriptin message
+      conn.on("errorMessage", resolve);
+
+      conn.on("parameterDescription", ({ dataTypeIDs }) => {
+        // after getting parameterDescription, we'll either get rowDescriptin or
+        // noData if the query doesn't return anything
+        conn.on("rowDescription", ({ fields }) => {
+          resolve({ input: dataTypeIDs, output: fields });
+        });
+        conn.on("noData", () => {
+          resolve({ input: dataTypeIDs, output: null });
+        });
+      });
+    });
+
+    conn.removeAllListeners();
+    return r;
   });
 };

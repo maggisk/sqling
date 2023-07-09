@@ -2,7 +2,7 @@
   "compilerOptions": {
     "target": "es6",
     "module": "commonjs",
-    "rootDir": ".",
+    "rootDir": "./src",
     "types": ["node"],
     "moduleResolution": "node",
     "esModuleInterop": true,
@@ -13,7 +13,7 @@
     "strict": true,
     "paths": {
       "sqling/lib/*": ["./*"]
-    }
+    },
   },
-  "exclude": ["lib", "node_modules"]
+  "exclude": ["lib", "test", "node_modules"]
 }

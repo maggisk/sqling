@@ -5,5 +5,5 @@ import { teardown } from "./test/teardown";
 japa.configure({
   files: ["test/**/*.test.ts"],
   before: [setup],
-  after: [teardown]
+  after: [teardown],
 });

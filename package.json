@@ -9,6 +9,7 @@
     "test": "ts-node -r dotenv/config -r tsconfig-paths/register japa.ts"
   },
   "dependencies": {
+    "glob": "^10.3.2",
     "pg": "^8.7.1",
     "pg-cursor": "^2.7.1"
   },

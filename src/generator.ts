@@ -1,14 +1,13 @@
-import assert from "assert";
 import fs from "fs";
 import ts from "typescript";
 import { DatabaseError } from "pg-protocol";
 import chokidar from "chokidar";
 import { ClientConfig } from "pg";
 import { connect, describeQuery, getPgTypes, listTablesAndColumns } from "./db";
-import { red, green, explainQueryError } from "./utils";
+import { red, green, explainQueryError, dedent } from "./utils";
 import Mutex from "./mutex";
 import * as types from "./types";
-import * as astUtils from "./astUtils";
+import { glob } from "glob";
 
 interface Generator {
   db: types.Database;
@@ -16,8 +15,36 @@ interface Generator {
   catalog: types.Catalog;
 }
 
+const visitAllNodes = (root: ts.Node, visitor: (n: ts.Node) => void): void => {
+  const visit = (node: ts.Node): void => {
+    visitor(node);
+    node.forEachChild(visit);
+  };
+  visit(root);
+};
+
+export const extractQueriesFromAst = (ast: ts.SourceFile): string[] => {
+  const r: string[] = [];
+
+  visitAllNodes(ast, (node) => {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.escapedText === "query" &&
+      node.arguments[0] &&
+      ts.isNoSubstitutionTemplateLiteral(node.arguments[0])
+    ) {
+      r.push(node.arguments[0].text);
+    }
+  });
+
+  return r;
+};
+
 const typemap: Record<string, string> = {
-  int8: "string", // node-postgres also returns 64 bit ints as strings
+  // node-postgres also returns 64 bit ints (int8) as strings
+  // would be nice to add the option to return these a ints
+  int8: "string",
   int: "number",
   float: "number",
   numeric: "number",
@@ -28,20 +55,50 @@ const typemap: Record<string, string> = {
   char: "string",
   varchar: "string",
   uuid: "string",
+  bpchar: "string",
   timestamp: "Date",
-  timestamptz: "Date"
+  timestamptz: "Date",
 };
 
-const lines = (...args: Array<string | string[]>): string => {
-  return args.flatMap(x => (Array.isArray(x) ? x : [x])).join("\n");
+type CodeBlock = string | Array<CodeBlock>;
+
+const lines = (blocks: CodeBlock[], indent = ""): string => {
+  return blocks
+    .map((line) => {
+      if (Array.isArray(line)) {
+        return lines(line, "  " + indent);
+      }
+      return indent + line;
+    })
+    .join("\n");
 };
 
-const collectQueries = (filePath: string): Array<[string, types.QueryDef]> => {
+const extractQueries = (filePath: string): types.QueryDefinition[] => {
   const code = fs.readFileSync(filePath, { encoding: "utf-8" });
   const ast = ts.createSourceFile(filePath, code, ts.ScriptTarget.Latest);
+  const queries = extractQueriesFromAst(ast);
 
-  return astUtils.extractQueriesFromAst(ast).map(([name, node]) => {
-    return [name, astUtils.extractQueryString(node)];
+  return queries.map((sql): types.QueryDefinition => {
+    const parameters = new Map<string, number>();
+
+    const formatted = sql.replace(
+      /(\$+)([\w_][\w\d_]*)/g,
+      (match, prefix: string, name: string) => {
+        if (prefix !== "$") {
+          return match;
+        }
+        if (parameters.get(name) == null) {
+          parameters.set(name, parameters.size + 1);
+        }
+        return "$" + parameters.get(name);
+      }
+    );
+
+    return {
+      formatted,
+      original: sql,
+      parameterNames: Array.from(parameters.keys()),
+    };
   });
 };
 
@@ -50,141 +107,202 @@ const pgTypeIdToTsType = (typeMap: types.TypeMap, typeId: number): string => {
   const tsTypeName =
     typemap[type?.name] ?? typemap[type?.name.replace(/\d/g, "")] ?? "unknown";
 
-  if (tsTypeName === "unknown") console.log(type);
+  if (tsTypeName === "unknown") {
+    console.warn("unknown postgres type:", type);
+  }
+
   return tsTypeName + (type.isArray ? "[]" : "");
 };
 
-const generateInputType = (
+const generateParametersType = (
   types: types.TypeMap,
   { input }: types.QueryDescription,
-  { keys }: types.QueryDef
-): string[] => {
-  const uniq = Array.from(new Set(keys)).sort();
-  return uniq.map(k => {
-    return `${k}: ${pgTypeIdToTsType(types, input[keys.indexOf(k)])} | null`;
-  });
+  { parameterNames }: types.QueryDefinition
+): CodeBlock => {
+  const uniq = Array.from(new Set(parameterNames)).sort();
+  return [
+    "{",
+    uniq.map(
+      (k) =>
+        `${JSON.stringify(k)}: ${pgTypeIdToTsType(
+          types,
+          input[parameterNames.indexOf(k)]
+        )} | null | undefined`
+    ),
+    "}",
+  ];
 };
 
 const generateReturnType = (
   types: types.TypeMap,
   catalog: types.Catalog,
   desc: types.QueryDescription
-): string[] => {
-  return Array.from(desc.output)
-    .sort((a, b) => (a.name < b.name ? -1 : 1))
-    .map(x => {
-      let type = pgTypeIdToTsType(types, x.dataTypeID);
-      const col = catalog.tables.get(x.tableID)?.columns.get(x.columnID);
-      return `${x.name}: ${type} ${col?.nullable ? "| null" : ""}`.trim();
-    });
-};
-
-const generateQuery = async (
-  { db, types, catalog }: Generator,
-  sourceFile: string,
-  name: string,
-  query: types.QueryDef
-): Promise<string> => {
-  const id = name.charAt(0).toUpperCase() + name.substring(1);
-  const description = await describeQuery(db, query.sql);
-  const identifier = `${sourceFile}: ${name}`;
-
-  if (description instanceof DatabaseError) {
-    console.error(`${identifier} ${red(description.message)}`);
-    console.error(explainQueryError(query.sql, description));
-    return lines(
-      "// Query error",
-      `export type ${id}Input = never`,
-      `export type ${id}Output = never`,
-      `export const ${name} = null`
-    );
+): CodeBlock => {
+  if (desc.output == null) {
+    return ["void"];
   }
 
-  console.log(`${identifier} ${green("ok")}`);
+  return [
+    "{",
+    Array.from(desc.output)
+      .sort((a, b) => (a.name < b.name ? -1 : 1))
+      .map((x) => {
+        let type = pgTypeIdToTsType(types, x.dataTypeID);
+        const col = catalog.tables.get(x.tableID)?.columns.get(x.columnID);
+        return `${JSON.stringify(x.name)}: ${type} ${
+          col?.nullable ? "| null" : ""
+        }`.trim();
+      }),
+    "}",
+  ];
+};
 
-  return lines(
-    `export interface ${id}Input {`,
-    generateInputType(types, description, query).map(s => "  " + s),
-    `}`,
-    "",
-    `export interface ${id}Output {`,
-    generateReturnType(types, catalog, description).map(s => "  " + s),
-    `}`,
-    "",
-    `export const ${name} = new runtime.Query<${id}Input, ${id}Output>(`,
-    `  ${JSON.stringify(query.sql)},`,
-    `  ${query.keys.length ? JSON.stringify(query.keys) : "[]"}`,
-    `)`
+const processFile = async (
+  gen: Generator,
+  filepath: string
+): Promise<types.ParsedQuery[]> => {
+  return await Promise.all(
+    extractQueries(filepath).map(async (definition) => {
+      const description = await describeQuery(gen.db, definition.formatted);
+      return { definition, description };
+    })
   );
 };
 
-const writeFile = async (
-  genState: Generator,
-  sourceFile: string
-): Promise<void> => {
-  const queryCode = await Promise.all(
-    collectQueries(sourceFile).map(async ([name, query]) => {
-      return await generateQuery(genState, sourceFile, name, query);
-    })
+const generateModule = async (
+  outputFile: string,
+  gen: Generator,
+  queryMap: Record<string, types.ParsedQuery[]>
+) => {
+  const flatParsedQueries = Object.entries(queryMap).flatMap(
+    ([filename, queries]: [string, types.ParsedQuery[]]) => {
+      return queries.map((query) => ({ filename, query }));
+    }
   );
 
-  const code = lines(
-    "import * as runtime from 'sqling/lib/runtime'",
+  for (const { filename, query } of flatParsedQueries) {
+    console.log("\n>>", filename);
+    if (query.description instanceof DatabaseError) {
+      console.warn(red("Error: " + query.description.message));
+      console.warn(
+        dedent(
+          explainQueryError(query.definition.formatted, query.description)
+        ).trim()
+      );
+    } else {
+      console.log(green(dedent(query.definition.original).trim()));
+    }
+  }
+
+  const queryConst: CodeBlock = [
+    `const Queries = {`,
+    flatParsedQueries.map(({ filename, query }, i) => {
+      // types for when the query has an error
+      let inputType: CodeBlock = "never";
+      let outputType: CodeBlock = "never";
+
+      if (!(query.description instanceof DatabaseError)) {
+        inputType = generateParametersType(
+          gen.types,
+          query.description,
+          query.definition
+        );
+
+        outputType = generateReturnType(
+          gen.types,
+          gen.catalog,
+          query.description
+        );
+      }
+
+      return [
+        `// ${filename}`,
+        `${JSON.stringify(query.definition.original)}: new runtime.Query<`,
+        [inputType, ",", outputType],
+        `>(${JSON.stringify(query.definition.formatted)}, ${JSON.stringify(
+          query.definition.parameterNames
+        )}),`,
+        "",
+      ];
+    }),
+    "} as const",
+  ];
+
+  const code = lines([
+    "import * as runtime from 'sqling/lib/runtime';",
     "",
     "/* THIS FILE IS AUTOMATICALLY GENERATED BY SQLING. DO NOT EDIT IT DIRECTLY */",
     "",
-    queryCode
-  );
+    ...queryConst,
+    "",
+    "export default function <T extends keyof typeof Queries>(sql: T): Readonly<typeof Queries[T]> {",
+    "  return Queries[sql]",
+    "}",
+    "",
+  ]);
 
-  const destFile = sourceFile.replace(/\.([^.]*?)$/, ".sql.$1");
-  assert(destFile !== sourceFile, "attempted to overwrite input file");
-  fs.writeFileSync(destFile, code, { encoding: "utf8" });
+  fs.writeFileSync(outputFile, code, { encoding: "utf-8" });
 };
 
 export const generate = async ({
-  glob,
+  pattern,
+  outputFile,
   pgConfig,
   watch = true,
-  afterWrite = () => {}
+  afterWrite = () => {},
 }: {
-  glob: string | string[];
+  pattern: string | string[];
+  outputFile: string;
   pgConfig: ClientConfig;
   watch: boolean;
-  afterWrite?: (path: string) => void | Promise<void>;
+  afterWrite?: () => void | Promise<void>;
 }): Promise<void> => {
-  const mutexes: Record<string, Mutex> = {};
   const db = await connect(pgConfig);
   const generator = {
     db,
     types: await getPgTypes(db.client),
-    catalog: await listTablesAndColumns(db.client)
+    catalog: await listTablesAndColumns(db.client),
   };
 
+  const sources: Record<string, types.ParsedQuery[]> = {};
+
+  for (const f of await glob(pattern)) {
+    const queries = await processFile(generator, f);
+    if (queries.length > 0) {
+      sources[f] = queries;
+    }
+  }
+
+  await generateModule(outputFile, generator, sources);
+  await afterWrite();
+
+  if (!watch) {
+    db.client.end();
+    db.conn.end();
+    return;
+  }
+
+  const mutex = new Mutex();
   let ready = false;
-  const watcher = chokidar
-    .watch(glob)
+
+  chokidar
+    .watch(pattern, {})
     .on("ready", () => {
       ready = true;
-      if (!watch) {
-        watcher.close()
-      }
     })
-    .on("all", (_event, path, _stats) => {
-      if (path.endsWith(".sql.ts")) return;
-
-      if (!mutexes[path]) {
-        mutexes[path] = new Mutex();
-      }
-      mutexes[path].synchronize(async () => {
-        try {
-          if (ready) {
-            generator.catalog = await listTablesAndColumns(db.client);
+    .on("all", (event, f, _stats) => {
+      if (ready) {
+        processFile(generator, f).then((queries) => {
+          if (queries.length === 0 && sources[f] == null) {
+            return;
           }
-          await writeFile(generator, path);
-          await afterWrite(path);
-        } catch (e) {
-          console.error(e);
-        }
-      });
+
+          sources[f] = queries;
+          mutex.synchronize(async () => {
+            await generateModule(outputFile, generator, sources);
+            await afterWrite();
+          });
+        });
+      }
     });
 };
